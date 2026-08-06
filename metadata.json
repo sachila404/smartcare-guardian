@@ -1,0 +1,6 @@
+{
+  "name": "SmartCare Guardian",
+  "description": "Intelligent child vital monitoring and care management platform with real-time health updates, AI risk insights, camera feeds, medication logs, and multi-caregiver role-based access.",
+  "requestFramePermissions": ["camera", "microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
