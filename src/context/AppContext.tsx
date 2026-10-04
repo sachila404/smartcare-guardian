@@ -489,6 +489,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
    const safeChildrenList = useMemo(() => childrenList.map(withSafeDefaults), [childrenList]);
   const liveVitals = useLiveVitals(activeChildId);
+  console.log('DEBUG — activeChildId:', activeChildId);
+  console.log('DEBUG — liveVitals:', liveVitals);
+  
+  useEffect(() => {
+  if (!activeChildId && safeChildrenList.length > 0) {
+    setActiveChildId(safeChildrenList[0].id);
+  }
+  }, [safeChildrenList, activeChildId]);
 
   const activeChild = useMemo(() => {
     const base = safeChildrenList.find((c) => c.id === activeChildId) || safeChildrenList[0];
