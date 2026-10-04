@@ -20,8 +20,11 @@ export const Register: React.FC<RegisterProps> = ({ onNavigateToLogin }) => {
   const [confirmPassword, setConfirmPassword] = useState('');
   const [agreed, setAgreed] = useState(false);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const [errorMessage, setErrorMessage] = useState('');
+
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    setErrorMessage('');
     if (!agreed) {
       alert('Please agree to the Terms of Service and Privacy Policy to continue.');
       return;
@@ -30,7 +33,11 @@ export const Register: React.FC<RegisterProps> = ({ onNavigateToLogin }) => {
       alert('Passwords do not match.');
       return;
     }
-    register(fullName || 'New Guardian', email, role);
+    try {
+      await register(fullName || 'New Guardian', email, password, role);
+    } catch (err: any) {
+      setErrorMessage(err.message || 'Registration failed.');
+    }
   };
 
   return (
@@ -160,7 +167,9 @@ export const Register: React.FC<RegisterProps> = ({ onNavigateToLogin }) => {
             {t('agreeToTerms')}
           </label>
         </div>
-
+{errorMessage && (
+  <p className="text-xs text-red-600 dark:text-red-400 -mt-1">{errorMessage}</p>
+)}
         <button
           type="submit"
           className="w-full bg-[#006A53] hover:bg-[#005240] text-white font-bold py-3.5 px-4 rounded-full flex items-center justify-center gap-2 shadow-md transition-all mt-3"

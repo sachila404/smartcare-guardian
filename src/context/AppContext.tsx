@@ -12,13 +12,46 @@ import {
   AppSettings,
 } from '../types';
 
+import { collection, addDoc, doc, updateDoc, serverTimestamp } from 'firebase/firestore';
+import { db } from '../firebase/config';
+
+import { loginUser, registerUser, logoutUser, onAuthStateChanged, auth, getUserDoc } from '../firebase/auth';
+
+import { useGuardianChildren, useAlerts, useMedications, useCareNotes, useLiveVitals } from '../firebase/hooks';
+const DEFAULT_VITALS: VitalsData = {
+  heartRate: 0,
+  spO2: 0,
+  temperature: 0,
+  activity: 'Unknown',
+  status: 'stable',
+  statusMessage: 'Waiting for sensor data...',
+  lastUpdated: 'No data yet',
+  heartRateTrend: [],
+  spO2Trend: [],
+  tempTrend: [],
+  sleepQualityHours: 0,
+};
+
+function withSafeDefaults(child: ChildProfile): ChildProfile {
+  return {
+    ...child,
+    avatarUrl: child.avatarUrl || 'https://images.unsplash.com/photo-1543332164-6e82f355badc?w=150',
+    primaryPhysician: child.primaryPhysician || 'Not set',
+    activeDiagnoses: child.activeDiagnoses || [],
+    allergies: child.allergies || [],
+    specialInstructions: child.specialInstructions || 'None recorded',
+    currentVitals: child.currentVitals || DEFAULT_VITALS,
+    connectedDevicesCount: child.connectedDevicesCount ?? 0,
+    deviceStatus: child.deviceStatus || 'No device data yet',
+  };
+}
 interface AppContextType {
   // Auth
   user: User | null;
   isAuthenticated: boolean;
-  login: (email: string, role?: UserRole) => void;
-  register: (name: string, email: string, role: UserRole) => void;
-  logout: () => void;
+  login: (email: string, password: string) => Promise<void>;
+  register: (name: string, email: string, password: string, role: UserRole) => Promise<void>;
+  logout: () => Promise<void>;
   switchUserRole: (role: UserRole) => void;
 
   // Children Management
@@ -26,27 +59,27 @@ interface AppContextType {
   activeChildId: string;
   activeChild: ChildProfile | undefined;
   setActiveChildId: (id: string) => void;
-  addChild: (newChild: Partial<ChildProfile>) => void;
-  updateChildProfile: (id: string, updates: Partial<ChildProfile>) => void;
+  addChild: (newChild: Partial<ChildProfile>) => Promise<void>;
+  updateChildProfile: (id: string, updates: Partial<ChildProfile>) => Promise<void>;
 
   // Live Vitals Stream
   isLiveStreaming: boolean;
   setIsLiveStreaming: (active: boolean) => void;
-  triggerSimulatedAlert: () => void;
+  triggerSimulatedAlert: () => Promise<void>;
 
   // Alerts
   alerts: Alert[];
-  acknowledgeAlert: (alertId: string) => void;
-  resolveAlert: (alertId: string, note: string) => void;
+  acknowledgeAlert: (alertId: string) => Promise<void>;
+  resolveAlert: (alertId: string, note: string) => Promise<void>;
 
   // Medications
   medications: Medication[];
-  markMedicationGiven: (medId: string) => void;
-  snoozeMedication: (medId: string) => void;
+  markMedicationGiven: (medId: string) => Promise<void>;
+  snoozeMedication: (medId: string) => Promise<void>;
 
   // Care Notes
   careNotes: CareNote[];
-  addCareNote: (note: Omit<CareNote, 'id' | 'timestamp' | 'authorName' | 'authorRole'>) => void;
+  addCareNote: (note: Omit<CareNote, 'id' | 'timestamp' | 'authorName' | 'authorRole'>) => Promise<void>;
 
   // AI Insights
   aiRiskInsight: AIRiskInsight;
@@ -63,7 +96,7 @@ interface AppContextType {
   // Navigation / Modal triggers
   activeTab: 'home' | 'live' | 'alerts' | 'insights' | 'profile';
   setActiveTab: (tab: 'home' | 'live' | 'alerts' | 'insights' | 'profile') => void;
-  selectedDetailView: string | null; // e.g. 'heart_rate', 'seizure_risk', 'critical_alert', 'report_builder', 'access_mgmt', 'add_child', 'settings'
+  selectedDetailView: string | null;
   setSelectedDetailView: (view: string | null) => void;
   activeModal: 'switch_child' | 'add_note' | 'resolve_alert' | null;
   setActiveModal: (modal: 'switch_child' | 'add_note' | 'resolve_alert' | null) => void;
@@ -419,53 +452,73 @@ const initialSettings: AppSettings = {
 };
 
 export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [user, setUser] = useState<User | null>(initialUser);
-  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(true);
-  const [childrenList, setChildrenList] = useState<ChildProfile[]>(initialChildren);
-  const [activeChildId, setActiveChildId] = useState<string>('child-1');
+  const [user, setUser] = useState<User | null>(null);
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false);
+  const childrenList = useGuardianChildren(user?.id);
+  const [activeChildId, setActiveChildId] = useState<string>('');
   const [isLiveStreaming, setIsLiveStreaming] = useState<boolean>(true);
 
-  const [alerts, setAlerts] = useState<Alert[]>(initialAlerts);
-  const [medications, setMedications] = useState<Medication[]>(initialMedications);
-  const [careNotes, setCareNotes] = useState<CareNote[]>(initialCareNotes);
+  const childIds = useMemo(() => childrenList.map((c) => c.id), [childrenList]);
+  const alerts = useAlerts(childIds);
+  const medications = useMedications(childIds);
+  const careNotes = useCareNotes(childIds);
   const [aiRiskInsight] = useState<AIRiskInsight>(initialAIRiskInsight);
   const [linkedAdults, setLinkedAdults] = useState<AdultAccess[]>(initialLinkedAdults);
   const [settings, setSettings] = useState<AppSettings>(initialSettings);
+
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
+      if (firebaseUser) {
+        const userDoc = await getUserDoc(firebaseUser.uid);
+        if (userDoc) {
+          setUser(userDoc as User);
+          setIsAuthenticated(true);
+        }
+      } else {
+        setUser(null);
+        setIsAuthenticated(false);
+      }
+    });
+    return unsubscribe;
+  }, []);
 
   const [activeTab, setActiveTab] = useState<'home' | 'live' | 'alerts' | 'insights' | 'profile'>('home');
   const [selectedDetailView, setSelectedDetailView] = useState<string | null>(null);
   const [activeModal, setActiveModal] = useState<'switch_child' | 'add_note' | 'resolve_alert' | null>(null);
   const [selectedAlertForResolution, setSelectedAlertForResolution] = useState<Alert | null>(null);
 
+   const safeChildrenList = useMemo(() => childrenList.map(withSafeDefaults), [childrenList]);
+  const liveVitals = useLiveVitals(activeChildId);
+
   const activeChild = useMemo(() => {
-    return childrenList.find((c) => c.id === activeChildId) || childrenList[0];
-  }, [childrenList, activeChildId]);
+    const base = safeChildrenList.find((c) => c.id === activeChildId) || safeChildrenList[0];
+    if (!base) return undefined;
+    if (!liveVitals) return base;
+    return {
+      ...base,
+      currentVitals: {
+        ...base.currentVitals,
+        heartRate: liveVitals.heartRate ?? base.currentVitals.heartRate,
+        spO2: liveVitals.spO2 ?? base.currentVitals.spO2,
+        temperature: liveVitals.temperature ?? base.currentVitals.temperature,
+        activity: liveVitals.activity ?? base.currentVitals.activity,
+        statusMessage: 'Live data connected.',
+        lastUpdated: 'Just now',
+      },
+    };
+  }, [safeChildrenList, activeChildId, liveVitals]);
 
   // Auth Handlers
-  const login = (email: string, role: UserRole = 'parent') => {
-    setUser({
-      id: 'u-' + Date.now(),
-      fullName: email.split('@')[0].replace('.', ' ') || 'Guardian User',
-      email,
-      role,
-      avatarUrl: 'https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?w=150&auto=format&fit=crop&q=80',
-    });
-    setIsAuthenticated(true);
+ const login = async (email: string, password: string) => {
+    await loginUser(email, password);
   };
 
-  const register = (name: string, email: string, role: UserRole) => {
-    setUser({
-      id: 'u-' + Date.now(),
-      fullName: name,
-      email,
-      role,
-    });
-    setIsAuthenticated(true);
+  const register = async (name: string, email: string, password: string, role: UserRole) => {
+    await registerUser(name, email, password, role);
   };
 
-  const logout = () => {
-    setIsAuthenticated(false);
-    setUser(null);
+  const logout = async () => {
+    await logoutUser();
   };
 
   const switchUserRole = (role: UserRole) => {
@@ -475,15 +528,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   // Children Handlers
-  const addChild = (newChildData: Partial<ChildProfile>) => {
-    const newChild: ChildProfile = {
-      id: 'child-' + Date.now(),
+  const addChild = async (newChildData: Partial<ChildProfile>) => {
+    if (!user) return;
+    const docRef = await addDoc(collection(db, 'children'), {
       legalName: newChildData.legalName || 'New Child',
       preferredName: newChildData.preferredName || newChildData.legalName || 'Child',
       dateOfBirth: newChildData.dateOfBirth || '2022-01-01',
       ageYears: newChildData.ageYears || 2,
       gender: newChildData.gender || 'male',
-      avatarUrl: newChildData.avatarUrl || 'https://images.unsplash.com/photo-1543332164-6e82f355badc?w=150&auto=format&fit=crop&q=80',
       bloodGroup: newChildData.bloodGroup || 'O+',
       weightKg: newChildData.weightKg || 15,
       heightCm: newChildData.heightCm || 95,
@@ -491,112 +543,49 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       activeDiagnoses: newChildData.activeDiagnoses || [],
       allergies: newChildData.allergies || [],
       specialInstructions: newChildData.specialInstructions || 'None',
-      connectedDevicesCount: 1,
-      deviceStatus: 'Smart Band Paired',
-      currentVitals: {
-        heartRate: 80,
-        spO2: 98,
-        temperature: 36.7,
-        activity: 'Resting',
-        status: 'stable',
-        statusMessage: 'All readings normal.',
-        lastUpdated: 'Just now',
-        heartRateTrend: [],
-        spO2Trend: [],
-        tempTrend: [],
-        sleepQualityHours: 8.0,
-      },
-    };
-
-    setChildrenList((prev) => [...prev, newChild]);
-    setActiveChildId(newChild.id);
+      guardians: [user.id],
+    });
+    setActiveChildId(docRef.id);
   };
 
-  const updateChildProfile = (id: string, updates: Partial<ChildProfile>) => {
-    setChildrenList((prev) =>
-      prev.map((c) => (c.id === id ? { ...c, ...updates } : c))
-    );
+  const updateChildProfile = async (id: string, updates: Partial<ChildProfile>) => {
+    await updateDoc(doc(db, 'children', id), updates as any);
   };
 
   // Live Vitals Simulation Ticker
-  useEffect(() => {
-    if (!isLiveStreaming) return;
-
-    const interval = setInterval(() => {
-      setChildrenList((prev) =>
-        prev.map((child) => {
-          if (child.id !== activeChildId) return child;
-
-          // Small subtle fluctuations
-          const hrDelta = Math.floor(Math.random() * 3) - 1; // -1, 0, or 1
-          const spO2Delta = Math.random() > 0.8 ? (Math.random() > 0.5 ? 1 : -1) : 0;
-          const tempDelta = Number(((Math.random() * 0.1) - 0.05).toFixed(1));
-
-          const newHR = Math.min(140, Math.max(65, child.currentVitals.heartRate + hrDelta));
-          const newSpO2 = Math.min(100, Math.max(92, child.currentVitals.spO2 + spO2Delta));
-          const newTemp = Number(Math.min(39.5, Math.max(36.0, child.currentVitals.temperature + tempDelta)).toFixed(1));
-
-          const nowStr = 'Just now';
-
-          const newHRTrend = [
-            ...child.currentVitals.heartRateTrend.slice(-6),
-            { time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }), value: newHR },
-          ];
-
-          return {
-            ...child,
-            currentVitals: {
-              ...child.currentVitals,
-              heartRate: newHR,
-              spO2: newSpO2,
-              temperature: newTemp,
-              lastUpdated: nowStr,
-              heartRateTrend: newHRTrend,
-            },
-          };
-        })
-      );
-    }, 3000);
-
-    return () => clearInterval(interval);
-  }, [isLiveStreaming, activeChildId]);
+// Live Vitals Simulation Ticker — disabled, real vitals now stream from Firestore via the GitHub Actions simulator
 
   // Alert Trigger Simulator
-  const triggerSimulatedAlert = () => {
-    const newAlert: Alert = {
-      id: 'alt-' + Date.now(),
+  const triggerSimulatedAlert = async () => {
+    if (!activeChild) return;
+    await addDoc(collection(db, 'alerts'), {
       childId: activeChild.id,
       childName: activeChild.preferredName,
       title: 'SpO2 Drop Detected',
       description: 'Oxygen saturation dropped to 91% for 45 seconds. Immediate inspection advised.',
       severity: 'critical',
       status: 'active',
-      timestamp: 'Just now',
+      timestamp: serverTimestamp(),
       metricType: 'spo2',
       currentValue: '91%',
       normalRange: '95 - 100%',
-    };
-
-    setAlerts((prev) => [newAlert, ...prev]);
+    });
   };
 
-  // Alert Handlers
-  const acknowledgeAlert = (alertId: string) => {
-    setAlerts((prev) =>
-      prev.map((a) => (a.id === alertId ? { ...a, status: 'acknowledged', acknowledgedBy: user?.fullName } : a))
-    );
+  const acknowledgeAlert = async (alertId: string) => {
+    await updateDoc(doc(db, 'alerts', alertId), {
+      status: 'acknowledged',
+      acknowledgedBy: user?.fullName,
+    });
   };
 
-  const resolveAlert = (alertId: string, note: string) => {
-    setAlerts((prev) =>
-      prev.map((a) =>
-        a.id === alertId
-          ? { ...a, status: 'resolved', resolvedBy: user?.fullName, resolutionNote: note }
-          : a
-      )
-    );
+  const resolveAlert = async (alertId: string, note: string) => {
+    await updateDoc(doc(db, 'alerts', alertId), {
+      status: 'resolved',
+      resolvedBy: user?.fullName,
+      resolutionNote: note,
+    });
 
-    // Auto add a care note
     const alertObj = alerts.find((a) => a.id === alertId);
     if (alertObj) {
       addCareNote({
@@ -608,14 +597,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   };
 
+   
   // Medication Handlers
-  const markMedicationGiven = (medId: string) => {
+  const markMedicationGiven = async (medId: string) => {
     const timeNow = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    setMedications((prev) =>
-      prev.map((m) =>
-        m.id === medId ? { ...m, status: 'given', givenAt: timeNow } : m
-      )
-    );
+    await updateDoc(doc(db, 'medications', medId), { status: 'given', givenAt: timeNow });
 
     const medObj = medications.find((m) => m.id === medId);
     if (medObj) {
@@ -628,23 +614,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   };
 
-  const snoozeMedication = (medId: string) => {
-    setMedications((prev) =>
-      prev.map((m) => (m.id === medId ? { ...m, status: 'snoozed' } : m))
-    );
+  const snoozeMedication = async (medId: string) => {
+    await updateDoc(doc(db, 'medications', medId), { status: 'snoozed' });
   };
 
   // Care Note Handlers
-  const addCareNote = (noteData: Omit<CareNote, 'id' | 'timestamp' | 'authorName' | 'authorRole'>) => {
-    const timeNow = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    const newNote: CareNote = {
+  const addCareNote = async (noteData: Omit<CareNote, 'id' | 'timestamp' | 'authorName' | 'authorRole'>) => {
+    await addDoc(collection(db, 'careNotes'), {
       ...noteData,
-      id: 'note-' + Date.now(),
-      timestamp: timeNow,
+      timestamp: serverTimestamp(),
       authorName: user?.fullName || 'Caregiver',
       authorRole: user?.role || 'parent',
-    };
-    setCareNotes((prev) => [newNote, ...prev]);
+    });
   };
 
   // Access Management
@@ -676,7 +657,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         logout,
         switchUserRole,
 
-        children: childrenList,
+        children: safeChildrenList,
         activeChildId,
         activeChild,
         setActiveChildId,

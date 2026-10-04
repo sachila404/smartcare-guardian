@@ -14,9 +14,17 @@ export const Header: React.FC = () => {
   } = useApp();
   const { t } = useLocalization();
 
-  const unreadAlertsCount = alerts.filter((a) => a.status === 'active').length;
+  if (!activeChild) {
+    return (
+      <header className="sticky top-0 z-30 bg-white/95 dark:bg-[#1A2825]/95 backdrop-blur-md border-b border-gray-200/80 dark:border-gray-800 px-4 py-3 flex items-center justify-between">
+        <span className="text-sm text-gray-500">Loading...</span>
+      </header>
+    );
+  }
 
+  const unreadAlertsCount = alerts.filter((a) => a.status === 'active').length;
   return (
+    // ...rest of your existing JSX stays exactly the same
     <header className="sticky top-0 z-30 bg-white/95 dark:bg-[#1A2825]/95 backdrop-blur-md border-b border-gray-200/80 dark:border-gray-800 px-4 py-3 flex items-center justify-between transition-colors">
       {/* Left: Active Child Switcher Button */}
       {selectedDetailView ? (

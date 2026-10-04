@@ -34,7 +34,10 @@ import { AddCareNoteModal } from './components/care/AddCareNoteModal';
 import { ResolveAlertModal } from './components/alerts/ResolveAlertModal';
 
 const MainAppContent: React.FC = () => {
-  const { isAuthenticated, activeTab, selectedDetailView } = useApp();
+  const { isAuthenticated, activeTab, selectedDetailView, user, children: safeChildrenList } = useApp();
+
+  console.log('DEBUG — user.id:', user?.id);
+  console.log('DEBUG — childrenList:', safeChildrenList);
 
   const [showSplash, setShowSplash] = useState(true);
   const [hasSeenOnboarding, setHasSeenOnboarding] = useState(false);
