@@ -1,10 +1,10 @@
+﻿const { initializeApp, cert } = require('firebase-admin/app');
+const { getFirestore, FieldValue } = require('firebase-admin/firestore');
 
-const admin = require('firebase-admin');
-
-admin.initializeApp({
-  credential: admin.credential.cert(JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT)),
+const app = initializeApp({
+  credential: cert(JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT)),
 });
-const db = admin.firestore();
+const db = getFirestore(app);
 const CHILD_ID = process.env.CHILD_ID;
 
 const THRESHOLDS = { heartRateHigh: 150, heartRateLow: 60, spO2Low: 92, temperatureFever: 38.0 };
@@ -26,7 +26,7 @@ async function run() {
   const temperature = Number(maybeSpike(randomWalk(prev.temperature, 36.2, 37.5, 0.2), 0.08, 1.8).toFixed(1));
   const activity = ['Resting', 'Active', 'Sleeping', 'Fussy'][Math.floor(Math.random() * 4)];
 
-  const reading = { heartRate, spO2, temperature, activity, lastUpdated: admin.firestore.FieldValue.serverTimestamp() };
+  const reading = { heartRate, spO2, temperature, activity, lastUpdated: FieldValue.serverTimestamp() };
 
   await liveRef.set(reading, { merge: true });
   await db.collection(`children/${CHILD_ID}/vitalsHistory`).add(reading);
@@ -37,17 +37,17 @@ async function run() {
   const alertsToCreate = [];
 
   if (temperature >= THRESHOLDS.temperatureFever) {
-    alertsToCreate.push({ title: 'Fever Alert', description: `Temperature ${temperature}°C exceeds threshold.`, severity: 'critical', metricType: 'temperature', currentValue: `${temperature}°C`, normalRange: '36.1–37.2°C' });
+    alertsToCreate.push({ title: 'Fever Alert', description: `Temperature ${temperature}°C exceeds threshold.`, severity: 'critical', metricType: 'temperature', currentValue: `${temperature}°C`, normalRange: '36.1-37.2°C' });
   }
   if (heartRate >= THRESHOLDS.heartRateHigh || heartRate <= THRESHOLDS.heartRateLow) {
-    alertsToCreate.push({ title: 'Abnormal Heartbeat', description: `Heart rate ${heartRate} bpm is out of range.`, severity: 'warning', metricType: 'heart_rate', currentValue: `${heartRate} bpm`, normalRange: '70–130 bpm' });
+    alertsToCreate.push({ title: 'Abnormal Heartbeat', description: `Heart rate ${heartRate} bpm is out of range.`, severity: 'warning', metricType: 'heart_rate', currentValue: `${heartRate} bpm`, normalRange: '70-130 bpm' });
   }
   if (spO2 <= THRESHOLDS.spO2Low) {
-    alertsToCreate.push({ title: 'Breathing Problem Detected', description: `Oxygen saturation dropped to ${spO2}%.`, severity: 'critical', metricType: 'spo2', currentValue: `${spO2}%`, normalRange: '95–100%' });
+    alertsToCreate.push({ title: 'Breathing Problem Detected', description: `Oxygen saturation dropped to ${spO2}%.`, severity: 'critical', metricType: 'spo2', currentValue: `${spO2}%`, normalRange: '95-100%' });
   }
 
   for (const alert of alertsToCreate) {
-    await db.collection('alerts').add({ ...alert, childId: CHILD_ID, childName, status: 'active', timestamp: admin.firestore.FieldValue.serverTimestamp() });
+    await db.collection('alerts').add({ ...alert, childId: CHILD_ID, childName, status: 'active', timestamp: FieldValue.serverTimestamp() });
     console.log('Created alert:', alert.title);
   }
 }
