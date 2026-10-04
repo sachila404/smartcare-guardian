@@ -13,7 +13,7 @@ jobs:
         with:
           node-version: 20
       - run: npm install firebase-admin
-      - run: node scripts/simulate-and-alert.js
+      - run: node scripts/simulate-and-alert.cjs
         env:
           FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
           CHILD_ID: ${{ secrets.CHILD_ID }}
