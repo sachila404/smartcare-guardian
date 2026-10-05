@@ -17,3 +17,4 @@ jobs:
         env:
           FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
           CHILD_ID: ${{ secrets.CHILD_ID }}
+          MODEL_API_URL: ${{ secrets.MODEL_API_URL }}

@@ -6,8 +6,7 @@ const app = initializeApp({
 });
 const db = getFirestore(app);
 const CHILD_ID = process.env.CHILD_ID;
-
-const THRESHOLDS = { heartRateHigh: 150, heartRateLow: 60, spO2Low: 92, temperatureFever: 38.0 };
+const MODEL_API_URL = process.env.MODEL_API_URL;
 
 function randomWalk(prev, min, max, step) {
   return Math.min(max, Math.max(min, Number((prev + (Math.random() - 0.5) * step).toFixed(1))));
@@ -15,6 +14,33 @@ function randomWalk(prev, min, max, step) {
 function maybeSpike(value, chance, amount) {
   return Math.random() < chance ? value + amount : value;
 }
+
+async function getModelPrediction(reading, ageMonths) {
+  const res = await fetch(`${MODEL_API_URL}/predict`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      heartRate: reading.heartRate,
+      spO2: reading.spO2,
+      temperature: reading.temperature,
+      ageMonths: ageMonths || 24,
+      activity: reading.activity.toLowerCase(),
+      sleepHoursLast24: 9,
+      movementIndex: Math.random(),
+      hourOfDay: new Date().getHours(),
+    }),
+  });
+  if (!res.ok) throw new Error(`Model API returned ${res.status}`);
+  return res.json();
+}
+
+const ALERT_INFO = {
+  fever: { title: 'Fever Alert', metricType: 'temperature', normalRange: '36.1–37.2°C', valueKey: 'temperature', unit: '°C' },
+  tachycardia: { title: 'Abnormal Heartbeat (Tachycardia)', metricType: 'heart_rate', normalRange: '70–130 bpm', valueKey: 'heartRate', unit: ' bpm' },
+  bradycardia: { title: 'Abnormal Heartbeat (Bradycardia)', metricType: 'heart_rate', normalRange: '70–130 bpm', valueKey: 'heartRate', unit: ' bpm' },
+  hypoxia: { title: 'Breathing Problem Detected', metricType: 'spo2', normalRange: '95–100%', valueKey: 'spO2', unit: '%' },
+  sleep_disturbance: { title: 'Sleep Disturbance Detected', metricType: 'sleep', normalRange: '7+ hours', valueKey: null, unit: '' },
+};
 
 async function run() {
   const liveRef = db.doc(`children/${CHILD_ID}/vitalsLive/current`);
@@ -34,21 +60,36 @@ async function run() {
 
   const childSnap = await db.doc(`children/${CHILD_ID}`).get();
   const childName = childSnap.data()?.preferredName ?? 'Child';
-  const alertsToCreate = [];
+  const ageYears = childSnap.data()?.ageYears ?? 2;
 
-  if (temperature >= THRESHOLDS.temperatureFever) {
-    alertsToCreate.push({ title: 'Fever Alert', description: `Temperature ${temperature}°C exceeds threshold.`, severity: 'critical', metricType: 'temperature', currentValue: `${temperature}°C`, normalRange: '36.1-37.2°C' });
-  }
-  if (heartRate >= THRESHOLDS.heartRateHigh || heartRate <= THRESHOLDS.heartRateLow) {
-    alertsToCreate.push({ title: 'Abnormal Heartbeat', description: `Heart rate ${heartRate} bpm is out of range.`, severity: 'warning', metricType: 'heart_rate', currentValue: `${heartRate} bpm`, normalRange: '70-130 bpm' });
-  }
-  if (spO2 <= THRESHOLDS.spO2Low) {
-    alertsToCreate.push({ title: 'Breathing Problem Detected', description: `Oxygen saturation dropped to ${spO2}%.`, severity: 'critical', metricType: 'spo2', currentValue: `${spO2}%`, normalRange: '95-100%' });
+  let modelResult;
+  try {
+    modelResult = await getModelPrediction(reading, ageYears * 12);
+    console.log('Model prediction:', modelResult);
+  } catch (err) {
+    console.error('Model API call failed, skipping alert evaluation this run:', err.message);
+    return;
   }
 
-  for (const alert of alertsToCreate) {
-    await db.collection('alerts').add({ ...alert, childId: CHILD_ID, childName, status: 'active', timestamp: FieldValue.serverTimestamp() });
-    console.log('Created alert:', alert.title);
+  for (const condition of modelResult.activeConditions) {
+    const info = ALERT_INFO[condition];
+    if (!info) continue;
+    const confidence = modelResult.predictions[condition]?.confidence ?? 0;
+    const currentValue = info.valueKey ? `${reading[info.valueKey]}${info.unit}` : `${reading.activity}`;
+
+    await db.collection('alerts').add({
+      childId: CHILD_ID,
+      childName,
+      title: info.title,
+      description: `AI model flagged ${condition.replace('_', ' ')} with ${(confidence * 100).toFixed(1)}% confidence.`,
+      severity: modelResult.severity,
+      status: 'active',
+      timestamp: FieldValue.serverTimestamp(),
+      metricType: info.metricType,
+      currentValue,
+      normalRange: info.normalRange,
+    });
+    console.log('Created alert:', info.title);
   }
 }
 
